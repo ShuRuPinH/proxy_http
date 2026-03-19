@@ -102,23 +102,31 @@ func handleConnect(ctx *fasthttp.RequestCtx) {
 		}
 		// copy client -> dest and dest -> client concurrently
 		done := make(chan struct{}, 2)
-
 		go func() {
 			defer func() { done <- struct{}{} }()
-			if _, err := io.Copy(destConn, clientConn); err != nil {
-				log.Printf("Error copying client->dest: %v", err)
+			_, err := io.Copy(destConn, clientConn)
+			if err != nil {
+				log.Printf("client->dest: %v", err)
+			}
+			if tcp, ok := destConn.(*net.TCPConn); ok {
+				tcp.CloseWrite()
 			}
 		}()
 
 		go func() {
 			defer func() { done <- struct{}{} }()
-			if _, err := io.Copy(clientConn, destConn); err != nil {
-				log.Printf("Error copying dest->client: %v", err)
+			_, err := io.Copy(clientConn, destConn)
+			if err != nil {
+				log.Printf("dest->client: %v", err)
+			}
+			if tcp, ok := clientConn.(*net.TCPConn); ok {
+				tcp.CloseWrite()
 			}
 		}()
 
-		// wait for one side to finish, then return (both goroutines will stop after connections close)
 		<-done
+		<-done
+
 	})
 	// note: return from handler, response (200) is written and later hijack handler will run
 }
