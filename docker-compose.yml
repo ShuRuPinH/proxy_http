@@ -1,0 +1,31 @@
+services:
+  proxy:
+    build: .
+    image: fasthttp-proxy:latest
+    container_name: fasthttp-proxy
+    restart: unless-stopped
+    # Host-сеть: без NAT/docker-proxy, near-native производительность.
+    # Контейнер слушает порты хоста напрямую (PROXY_ADDR / ADMIN_ADDR),
+    # поэтому секция ports не нужна.
+    network_mode: host
+    environment:
+      # Дефолтные креды прокси (используются только при первом запуске,
+      # когда ещё нет config.json). Дальше управляйте через админку.
+      PROXY_USER: "freeman"
+      PROXY_PASS: "ARzg8ZGZ"
+      # Креды админки — ОБЯЗАТЕЛЬНО смените на проде.
+      ADMIN_USER: "admin"
+      ADMIN_PASS: "change-me"
+      # SSRF-защита включена по умолчанию; "1" чтобы разрешить private-адреса.
+      PROXY_ALLOW_PRIVATE: "0"
+    volumes:
+      # Персистентность config.json между перезапусками.
+      - proxy-data:/data
+    # Прокси держит много одновременных соединений — поднимаем лимит дескрипторов.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
+volumes:
+  proxy-data:

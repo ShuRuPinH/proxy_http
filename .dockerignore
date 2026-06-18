@@ -1,0 +1,8 @@
+.git
+.gitignore
+*.md
+config.json
+config.json.tmp
+Dockerfile
+docker-compose.yml
+.dockerignore
