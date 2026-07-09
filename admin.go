@@ -1,9 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
-	"fmt"
-	"html"
+	"html/template"
 	"net"
 	"strings"
 
@@ -28,8 +28,9 @@ func checkAdminAuth(ctx *fasthttp.RequestCtx) bool {
 	if len(creds) != 2 {
 		return false
 	}
-	okUser := secureEqual(creds[0], adminUser)
-	okPass := secureEqual(creds[1], adminPass)
+	user, pass := cfg.AdminCredentials()
+	okUser := secureEqual(creds[0], user)
+	okPass := secureEqual(creds[1], pass)
 	return okUser && okPass
 }
 
@@ -59,13 +60,29 @@ func requestHostname(ctx *fasthttp.RequestCtx) string {
 }
 
 func isWeakAdminPassword() bool {
+	_, pass := cfg.AdminCredentials()
 	weak := []string{"admin", "change-me", "password", "123456"}
 	for _, w := range weak {
-		if secureEqual(adminPass, w) {
+		if secureEqual(pass, w) {
 			return true
 		}
 	}
-	return adminPass == ""
+	return pass == ""
+}
+
+type adminPageData struct {
+	AdminPort      string
+	BannerHTML     template.HTML
+	AlertsHTML     template.HTML
+	Hostname       string
+	ProxyPort      string
+	ProxyUser      string
+	SSRFStatusHTML template.HTML
+	ConfigPath     string
+	AdminUser      string
+	CurlExample    string
+	EnvHTTP        string
+	EnvHTTPS       string
 }
 
 const adminPageTmpl = `<!DOCTYPE html>
@@ -122,16 +139,18 @@ const adminPageTmpl = `<!DOCTYPE html>
   .hint { color: #94a3b8; font-size: 12px; margin-top: 8px; }
   label { display: block; font-size: 13px; margin: 14px 0 6px; color: #cbd5e1; }
   input {
-    width: 100%%; padding: 11px 13px; border-radius: 9px;
+    width: 100%; padding: 11px 13px; border-radius: 9px;
     border: 1px solid #334155; background: #0f172a; color: #e2e8f0; font-size: 14px;
   }
   input:focus { outline: none; border-color: #6366f1; }
   button {
-    width: 100%%; margin-top: 18px; padding: 12px; border: none;
+    width: 100%; margin-top: 18px; padding: 12px; border: none;
     border-radius: 9px; background: #6366f1; color: white; font-size: 15px;
     font-weight: 600; cursor: pointer;
   }
   button:hover { background: #4f46e5; }
+  button.secondary { background: #334155; }
+  button.secondary:hover { background: #475569; }
   .msg { margin-bottom: 18px; padding: 11px 13px; border-radius: 9px; font-size: 13px; }
   .ok { background: #064e3b; color: #6ee7b7; }
   .err { background: #4c0519; color: #fda4af; }
@@ -142,20 +161,20 @@ const adminPageTmpl = `<!DOCTYPE html>
 <body>
   <div class="wrap">
     <h1>HTTP Proxy</h1>
-    <div class="sub">Панель управления · порт админки %s</div>
+    <div class="sub">Панель управления · порт админки {{.AdminPort}}</div>
 
-    %s
-    %s
+    {{.BannerHTML}}
+    {{.AlertsHTML}}
 
     <div class="grid grid-2">
       <div class="card">
         <h2>Статус</h2>
         <div class="stats">
-          <div class="stat"><span>Прокси</span><strong>%s:%s</strong></div>
-          <div class="stat"><span>Логин прокси</span><strong>%s</strong></div>
+          <div class="stat"><span>Прокси</span><strong>{{.Hostname}}:{{.ProxyPort}}</strong></div>
+          <div class="stat"><span>Логин прокси</span><strong>{{.ProxyUser}}</strong></div>
           <div class="stat"><span>Аутентификация</span><strong>Proxy-Authorization: Basic</strong></div>
-          <div class="stat"><span>SSRF-защита</span><strong>%s</strong></div>
-          <div class="stat"><span>Конфиг</span><strong>%s</strong></div>
+          <div class="stat"><span>SSRF-защита</span><strong>{{.SSRFStatusHTML}}</strong></div>
+          <div class="stat"><span>Конфиг</span><strong>{{.ConfigPath}}</strong></div>
         </div>
       </div>
 
@@ -163,98 +182,119 @@ const adminPageTmpl = `<!DOCTYPE html>
         <h2>Безопасность админки</h2>
         <div class="stats">
           <div class="stat"><span>Доступ</span><strong>Basic Auth (HTTP)</strong></div>
-          <div class="stat"><span>Логин админки</span><strong>%s</strong></div>
-          <div class="stat"><span>Пароль админки</span><strong>из переменной ADMIN_PASS</strong></div>
+          <div class="stat"><span>Логин админки</span><strong>{{.AdminUser}}</strong></div>
+          <div class="stat"><span>Хранение</span><strong>{{.ConfigPath}}</strong></div>
         </div>
-        <p class="hint">Креды админки задаются в <code>ADMIN_USER</code> / <code>ADMIN_PASS</code> и не меняются через эту форму. Ограничьте доступ к порту %s файрволом.</p>
+        <p class="hint">Ограничьте доступ к порту {{.AdminPort}} файрволом. После смены кредов админки браузер запросит новый логин и пароль.</p>
       </div>
     </div>
 
     <div class="card" style="margin-top:20px">
-      <h2>Как подключиться</h2>
-      <p class="hint" style="margin-top:0;margin-bottom:14px">Замените <code>YOUR_PASSWORD</code> на пароль прокси. Хост <code>%s</code> взят из вашего текущего подключения к админке.</p>
+      <h2>Как подключиться к прокси</h2>
+      <p class="hint" style="margin-top:0;margin-bottom:14px">Замените <code>YOUR_PASSWORD</code> на пароль прокси. Хост <code>{{.Hostname}}</code> взят из вашего текущего подключения к админке.</p>
 
       <p style="font-size:13px;color:#cbd5e1;margin:0 0 8px"><strong>curl</strong></p>
-      <pre><code>curl -x http://%s:YOUR_PASSWORD@%s:%s https://example.com</code></pre>
+      <pre><code>{{.CurlExample}}</code></pre>
 
       <p style="font-size:13px;color:#cbd5e1;margin:18px 0 8px"><strong>Переменные окружения (Linux / macOS)</strong></p>
-      <pre><code>export http_proxy="http://%s:YOUR_PASSWORD@%s:%s"
-export https_proxy="http://%s:YOUR_PASSWORD@%s:%s"</code></pre>
+      <pre><code>export http_proxy="{{.EnvHTTP}}"
+export https_proxy="{{.EnvHTTPS}}"</code></pre>
 
       <p style="font-size:13px;color:#cbd5e1;margin:18px 0 8px"><strong>Браузер / ОС</strong></p>
       <ol>
         <li>Тип прокси: <strong>HTTP</strong> (не SOCKS)</li>
-        <li>Адрес: <strong>%s</strong>, порт: <strong>%s</strong></li>
-        <li>Логин: <strong>%s</strong>, пароль: ваш пароль прокси</li>
+        <li>Адрес: <strong>{{.Hostname}}</strong>, порт: <strong>{{.ProxyPort}}</strong></li>
+        <li>Логин: <strong>{{.ProxyUser}}</strong>, пароль: ваш пароль прокси</li>
         <li>Поддерживаются HTTP и HTTPS (метод CONNECT)</li>
       </ol>
     </div>
 
-    <div class="card" style="margin-top:20px">
-      <h2>Смена логина и пароля прокси</h2>
-      <p class="hint" style="margin-top:0;margin-bottom:4px">Изменения сохраняются в <code>%s</code> и применяются сразу, без перезапуска.</p>
-      <form method="POST" action="/update">
-        <label for="proxy_user">Логин прокси</label>
-        <input id="proxy_user" name="proxy_user" value="%s" autocomplete="off" required>
-        <label for="proxy_pass">Новый пароль</label>
-        <input id="proxy_pass" name="proxy_pass" type="password" placeholder="Введите новый пароль" autocomplete="new-password" required>
-        <button type="submit">Сохранить</button>
-      </form>
+    <div class="grid grid-2" style="margin-top:20px">
+      <div class="card">
+        <h2>Смена логина и пароля прокси</h2>
+        <p class="hint" style="margin-top:0;margin-bottom:4px">Изменения сохраняются в <code>{{.ConfigPath}}</code> и применяются сразу, без перезапуска.</p>
+        <form method="POST" action="/update-proxy">
+          <label for="proxy_user">Логин прокси</label>
+          <input id="proxy_user" name="proxy_user" value="{{.ProxyUser}}" autocomplete="off" required>
+          <label for="proxy_pass">Новый пароль</label>
+          <input id="proxy_pass" name="proxy_pass" type="password" placeholder="Введите новый пароль" autocomplete="new-password" required>
+          <button type="submit">Сохранить прокси</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <h2>Смена логина и пароля админки</h2>
+        <p class="hint" style="margin-top:0;margin-bottom:4px">Креды админки тоже сохраняются в <code>{{.ConfigPath}}</code>. После сохранения потребуется повторный вход.</p>
+        <form method="POST" action="/update-admin">
+          <label for="admin_user">Логин админки</label>
+          <input id="admin_user" name="admin_user" value="{{.AdminUser}}" autocomplete="off" required>
+          <label for="admin_pass">Новый пароль</label>
+          <input id="admin_pass" name="admin_pass" type="password" placeholder="Введите новый пароль" autocomplete="new-password" required>
+          <button type="submit" class="secondary">Сохранить админку</button>
+        </form>
+      </div>
     </div>
   </div>
 </body>
 </html>`
 
+var adminTmpl = template.Must(template.New("admin").Parse(adminPageTmpl))
+
 func renderAdmin(ctx *fasthttp.RequestCtx, msg, msgClass string) {
-	user, _ := cfg.Credentials()
+	proxyUser, _ := cfg.Credentials()
+	adminUser, _ := cfg.AdminCredentials()
 	hostname := requestHostname(ctx)
 	proxyPort := listenPort(proxyAddr)
 	adminPort := listenPort(adminAddr)
 
-	var banner string
+	data := adminPageData{
+		AdminPort:  adminPort,
+		Hostname:   hostname,
+		ProxyPort:  proxyPort,
+		ProxyUser:  proxyUser,
+		ConfigPath: configPath,
+		AdminUser:  adminUser,
+		CurlExample: "curl -x http://" + proxyUser + ":YOUR_PASSWORD@" + hostname + ":" + proxyPort + " https://example.com",
+		EnvHTTP:     "http://" + proxyUser + ":YOUR_PASSWORD@" + hostname + ":" + proxyPort,
+		EnvHTTPS:    "http://" + proxyUser + ":YOUR_PASSWORD@" + hostname + ":" + proxyPort,
+	}
+
 	if msg != "" {
-		banner = fmt.Sprintf(`<div class="msg %s">%s</div>`, msgClass, html.EscapeString(msg))
+		data.BannerHTML = template.HTML(`<div class="msg ` + template.HTMLEscapeString(msgClass) + `">` + template.HTMLEscapeString(msg) + `</div>`)
 	}
 
-	var warnings string
+	var alerts strings.Builder
+	alerts.WriteString(`<div class="info-box">Страница защищена Basic Auth. Без логина и пароля админки смена настроек недоступна.</div>`)
 	if isWeakAdminPassword() {
-		warnings = `<div class="warn-box"><strong>Внимание:</strong> используется слабый или стандартный пароль админки (<code>ADMIN_PASS</code>). Смените его в docker-compose или переменных окружения и ограничьте доступ к порту ` + html.EscapeString(adminPort) + ` файрволом.</div>`
+		alerts.WriteString(`<div class="warn-box"><strong>Внимание:</strong> используется слабый или стандартный пароль админки. Смените его в форме ниже и ограничьте доступ к порту `)
+		alerts.WriteString(template.HTMLEscapeString(adminPort))
+		alerts.WriteString(` файрволом.</div>`)
 	}
+	data.AlertsHTML = template.HTML(alerts.String())
 
-	ssrfStatus := `<span class="badge badge-ok">включена</span>`
 	if allowPrivate {
-		ssrfStatus = `<span class="badge badge-warn">отключена</span>`
+		data.SSRFStatusHTML = template.HTML(`<span class="badge badge-warn">отключена</span>`)
+	} else {
+		data.SSRFStatusHTML = template.HTML(`<span class="badge badge-ok">включена</span>`)
 	}
 
-	infoBox := `<div class="info-box">Эта страница защищена Basic Auth. Без логина и пароля админки (<code>ADMIN_USER</code> / <code>ADMIN_PASS</code>) смена кредов прокси недоступна.</div>`
+	var buf bytes.Buffer
+	if err := adminTmpl.Execute(&buf, data); err != nil {
+		ctx.Error("Internal Server Error", fasthttp.StatusInternalServerError)
+		return
+	}
 
 	ctx.SetContentType("text/html; charset=utf-8")
 	ctx.SetStatusCode(fasthttp.StatusOK)
-	fmt.Fprintf(ctx, adminPageTmpl,
-		html.EscapeString(adminPort),
-		banner,
-		infoBox+warnings,
-		html.EscapeString(hostname),
-		html.EscapeString(proxyPort),
-		html.EscapeString(user),
-		ssrfStatus,
-		html.EscapeString(configPath),
-		html.EscapeString(adminUser),
-		html.EscapeString(adminPort),
-		html.EscapeString(hostname),
-		html.EscapeString(user),
-		html.EscapeString(hostname),
-		html.EscapeString(proxyPort),
-		html.EscapeString(user),
-		html.EscapeString(hostname),
-		html.EscapeString(proxyPort),
-		html.EscapeString(user),
-		html.EscapeString(hostname),
-		html.EscapeString(proxyPort),
-		html.EscapeString(user),
-		html.EscapeString(configPath),
-		html.EscapeString(user),
-	)
+	ctx.SetBody(buf.Bytes())
+}
+
+func saveConfig(ctx *fasthttp.RequestCtx, successMsg string) {
+	if err := cfg.Save(); err != nil {
+		renderAdmin(ctx, "Ошибка сохранения: "+err.Error(), "err")
+		return
+	}
+	ctx.Redirect("/?ok="+successMsg, fasthttp.StatusSeeOther)
 }
 
 func adminHandler(ctx *fasthttp.RequestCtx) {
@@ -266,12 +306,15 @@ func adminHandler(ctx *fasthttp.RequestCtx) {
 	switch string(ctx.Path()) {
 	case "/":
 		msg := ""
-		if string(ctx.QueryArgs().Peek("ok")) == "1" {
-			msg = "Учётные данные обновлены"
+		switch string(ctx.QueryArgs().Peek("ok")) {
+		case "proxy":
+			msg = "Учётные данные прокси обновлены"
+		case "admin":
+			msg = "Учётные данные админки обновлены — войдите с новым логином и паролем"
 		}
 		renderAdmin(ctx, msg, "ok")
 
-	case "/update":
+	case "/update-proxy", "/update":
 		if string(ctx.Method()) != fasthttp.MethodPost {
 			ctx.Error("Method Not Allowed", fasthttp.StatusMethodNotAllowed)
 			return
@@ -279,15 +322,25 @@ func adminHandler(ctx *fasthttp.RequestCtx) {
 		user := strings.TrimSpace(string(ctx.PostArgs().Peek("proxy_user")))
 		pass := string(ctx.PostArgs().Peek("proxy_pass"))
 		if user == "" || pass == "" {
-			renderAdmin(ctx, "Логин и пароль не могут быть пустыми", "err")
+			renderAdmin(ctx, "Логин и пароль прокси не могут быть пустыми", "err")
 			return
 		}
 		cfg.SetCredentials(user, pass)
-		if err := cfg.Save(); err != nil {
-			renderAdmin(ctx, "Ошибка сохранения: "+err.Error(), "err")
+		saveConfig(ctx, "proxy")
+
+	case "/update-admin":
+		if string(ctx.Method()) != fasthttp.MethodPost {
+			ctx.Error("Method Not Allowed", fasthttp.StatusMethodNotAllowed)
 			return
 		}
-		ctx.Redirect("/?ok=1", fasthttp.StatusSeeOther)
+		user := strings.TrimSpace(string(ctx.PostArgs().Peek("admin_user")))
+		pass := string(ctx.PostArgs().Peek("admin_pass"))
+		if user == "" || pass == "" {
+			renderAdmin(ctx, "Логин и пароль админки не могут быть пустыми", "err")
+			return
+		}
+		cfg.SetAdminCredentials(user, pass)
+		saveConfig(ctx, "admin")
 
 	default:
 		ctx.Error("Not Found", fasthttp.StatusNotFound)

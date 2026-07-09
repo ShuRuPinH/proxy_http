@@ -6,7 +6,7 @@ import (
 	"sync"
 )
 
-// Config хранит изменяемые во время работы настройки прокси.
+// Config хранит изменяемые во время работы настройки прокси и админки.
 // Доступ к полям сериализуется через RWMutex, чтобы можно было
 // безопасно менять креды из админки во время обслуживания запросов.
 type Config struct {
@@ -14,27 +14,32 @@ type Config struct {
 	path      string
 	ProxyUser string `json:"proxy_user"`
 	ProxyPass string `json:"proxy_pass"`
+	AdminUser string `json:"admin_user,omitempty"`
+	AdminPass string `json:"admin_pass,omitempty"`
 }
 
 // configFile описывает только сериализуемую часть конфига.
 type configFile struct {
 	ProxyUser string `json:"proxy_user"`
 	ProxyPass string `json:"proxy_pass"`
+	AdminUser string `json:"admin_user,omitempty"`
+	AdminPass string `json:"admin_pass,omitempty"`
 }
 
 // LoadConfig читает конфиг из файла. Если файла нет — создаёт его,
 // используя переданные значения по умолчанию.
-func LoadConfig(path, defaultUser, defaultPass string) (*Config, error) {
+func LoadConfig(path, defaultUser, defaultPass, defaultAdminUser, defaultAdminPass string) (*Config, error) {
 	c := &Config{
 		path:      path,
 		ProxyUser: defaultUser,
 		ProxyPass: defaultPass,
+		AdminUser: defaultAdminUser,
+		AdminPass: defaultAdminPass,
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// Первый запуск: сохраняем дефолты на диск.
 			return c, c.Save()
 		}
 		return nil, err
@@ -50,6 +55,12 @@ func LoadConfig(path, defaultUser, defaultPass string) (*Config, error) {
 	if cf.ProxyPass != "" {
 		c.ProxyPass = cf.ProxyPass
 	}
+	if cf.AdminUser != "" {
+		c.AdminUser = cf.AdminUser
+	}
+	if cf.AdminPass != "" {
+		c.AdminPass = cf.AdminPass
+	}
 	return c, nil
 }
 
@@ -60,7 +71,7 @@ func (c *Config) Credentials() (user, pass string) {
 	return c.ProxyUser, c.ProxyPass
 }
 
-// SetCredentials обновляет логин и пароль в памяти.
+// SetCredentials обновляет логин и пароль прокси в памяти.
 func (c *Config) SetCredentials(user, pass string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -68,10 +79,30 @@ func (c *Config) SetCredentials(user, pass string) {
 	c.ProxyPass = pass
 }
 
+// AdminCredentials возвращает логин и пароль админки.
+func (c *Config) AdminCredentials() (user, pass string) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.AdminUser, c.AdminPass
+}
+
+// SetAdminCredentials обновляет логин и пароль админки в памяти.
+func (c *Config) SetAdminCredentials(user, pass string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.AdminUser = user
+	c.AdminPass = pass
+}
+
 // Save атомарно записывает текущий конфиг на диск.
 func (c *Config) Save() error {
 	c.mu.RLock()
-	cf := configFile{ProxyUser: c.ProxyUser, ProxyPass: c.ProxyPass}
+	cf := configFile{
+		ProxyUser: c.ProxyUser,
+		ProxyPass: c.ProxyPass,
+		AdminUser: c.AdminUser,
+		AdminPass: c.AdminPass,
+	}
 	path := c.path
 	c.mu.RUnlock()
 

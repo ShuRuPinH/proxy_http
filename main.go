@@ -12,8 +12,6 @@ import (
 var (
 	cfg          *Config
 	allowPrivate bool
-	adminUser    string
-	adminPass    string
 	proxyAddr    string
 	adminAddr    string
 	configPath   string
@@ -31,12 +29,16 @@ func main() {
 	adminAddr = getenv("ADMIN_ADDR", ":8081")
 	configPath = getenv("PROXY_CONFIG", "config.json")
 
-	adminUser = getenv("ADMIN_USER", "admin")
-	adminPass = getenv("ADMIN_PASS", "admin")
 	allowPrivate = os.Getenv("PROXY_ALLOW_PRIVATE") == "1"
 
 	var err error
-	cfg, err = LoadConfig(configPath, getenv("PROXY_USER", "freeman"), getenv("PROXY_PASS", "ARzg8ZGZ"))
+	cfg, err = LoadConfig(
+		configPath,
+		getenv("PROXY_USER", "freeman"),
+		getenv("PROXY_PASS", "ARzg8ZGZ"),
+		getenv("ADMIN_USER", "admin"),
+		getenv("ADMIN_PASS", "admin"),
+	)
 	if err != nil {
 		log.Fatalf("Failed to load config %q: %v", configPath, err)
 	}
@@ -70,6 +72,7 @@ func main() {
 	}
 
 	go func() {
+		adminUser, _ := cfg.AdminCredentials()
 		log.Printf("Starting admin panel on %s (user=%s)", adminAddr, adminUser)
 		if err := adminServer.ListenAndServe(adminAddr); err != nil {
 			log.Fatalf("Admin server error: %s", err)
