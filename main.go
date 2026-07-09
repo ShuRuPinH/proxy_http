@@ -14,6 +14,9 @@ var (
 	allowPrivate bool
 	adminUser    string
 	adminPass    string
+	proxyAddr    string
+	adminAddr    string
+	configPath   string
 )
 
 func getenv(key, def string) string {
@@ -24,9 +27,9 @@ func getenv(key, def string) string {
 }
 
 func main() {
-	addr := getenv("PROXY_ADDR", ":3128")
-	adminAddr := getenv("ADMIN_ADDR", ":8081")
-	configPath := getenv("PROXY_CONFIG", "config.json")
+	proxyAddr = getenv("PROXY_ADDR", ":3128")
+	adminAddr = getenv("ADMIN_ADDR", ":8081")
+	configPath = getenv("PROXY_CONFIG", "config.json")
 
 	adminUser = getenv("ADMIN_USER", "admin")
 	adminPass = getenv("ADMIN_PASS", "admin")
@@ -74,8 +77,8 @@ func main() {
 	}()
 
 	user, _ := cfg.Credentials()
-	log.Printf("Starting fasthttp proxy on %s (user=%s, allowPrivate=%v)", addr, user, allowPrivate)
-	if err := proxyServer.ListenAndServe(addr); err != nil {
+	log.Printf("Starting fasthttp proxy on %s (user=%s, allowPrivate=%v)", proxyAddr, user, allowPrivate)
+	if err := proxyServer.ListenAndServe(proxyAddr); err != nil {
 		log.Fatalf("Error in ListenAndServe: %s", err)
 	}
 }
